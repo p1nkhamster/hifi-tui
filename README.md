@@ -47,3 +47,5 @@ The API base URL is set in `src/hifi_tui/api.py`. Change `BASE_URL` to point to 
 ## Credits
 
 Powered by [hifi-api](https://github.com/binimum/hifi-api) by binimum.
+
+Thanks to [monochrome](https://github.com/monochrome-music/monochrome) for introducing me to the HiFi API.
