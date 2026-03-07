@@ -1,6 +1,6 @@
 # hifi-tui
 
-A Linux TUI for browsing and streaming music via the HiFi API (a Tidal proxy).
+A Linux TUI for browsing and streaming music via the [HiFi API](https://github.com/binimum/hifi-api) (a Tidal proxy).
 
 ## Requirements
 
@@ -43,3 +43,7 @@ The API base URL is set in `src/hifi_tui/api.py`. Change `BASE_URL` to point to 
 | Ctrl+↑ / Ctrl+↓ | Move track up / down in queue |
 | Escape | Go back (album / artist screens) |
 | q | Quit |
+
+## Credits
+
+Powered by [hifi-api](https://github.com/binimum/hifi-api) by binimum.
