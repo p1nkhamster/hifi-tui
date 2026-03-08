@@ -708,6 +708,9 @@ class QueuePane(Container):
         idx = table.cursor_row
         if idx > 0:
             self._player.move_in_queue(idx, idx - 1)
+            state = self._player.state
+            self._last_version = state.queue_version
+            self._rebuild(state)
             table.move_cursor(row=idx - 1)
 
     def action_move_down(self) -> None:
@@ -715,6 +718,9 @@ class QueuePane(Container):
         idx = table.cursor_row
         if idx < len(self._player.state.queue) - 1:
             self._player.move_in_queue(idx, idx + 1)
+            state = self._player.state
+            self._last_version = state.queue_version
+            self._rebuild(state)
             table.move_cursor(row=idx + 1)
 
 
@@ -1083,8 +1089,8 @@ class PlaylistScreen(Screen):
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
         Binding("delete", "remove_track", "Remove"),
-        Binding("shift+up", "move_up", "Move Up"),
-        Binding("shift+down", "move_down", "Move Down"),
+        Binding("ctrl+up", "move_up", "Move Up"),
+        Binding("ctrl+down", "move_down", "Move Down"),
     ]
 
     DEFAULT_CSS = """
@@ -1490,8 +1496,8 @@ _HIFI_BINDINGS: list[tuple[str, str, str | None]] = [
     ("Ctrl+R",   "[Playlists] Rename selected playlist",         None),
     ("Delete",   "[Playlists] Delete selected playlist",         None),
     # Inside a playlist
-    ("Shift+↑",  "[Playlist] Move track up",                     None),
-    ("Shift+↓",  "[Playlist] Move track down",                   None),
+    ("Ctrl+↑",   "[Playlist] Move track up",                     None),
+    ("Ctrl+↓",   "[Playlist] Move track down",                   None),
     ("Delete",   "[Playlist] Remove track from playlist",         None),
 ]
 

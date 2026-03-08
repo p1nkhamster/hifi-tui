@@ -96,7 +96,7 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 
 | Key | Action |
 |-----|--------|
-| `Shift+↑` / `Shift+↓` | Move track up / down |
+| `Ctrl+↑` / `Ctrl+↓` | Move track up / down |
 | `Delete` | Remove track from playlist |
 
 ## Last.fm
