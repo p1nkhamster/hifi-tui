@@ -21,7 +21,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import api
+from . import api, playlists
 from .player import Player, PlayerState, RepeatMode, TrackInfo
 
 
@@ -103,6 +103,7 @@ def _quality_label(item: dict) -> str:
 class SearchPane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("a", "add_to_queue", "Add to Queue"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
     ]
 
     DEFAULT_CSS = """
@@ -241,6 +242,27 @@ class SearchPane(Container):
                     app.call_from_thread(app.notify, f"Failed to add album: {e}", severity="error")
             threading.Thread(target=_load, daemon=True).start()
 
+    def action_add_to_playlist(self) -> None:
+        table = self.query_one("#search-table", DataTable)
+        idx = table.cursor_row
+        if not self._results or idx >= len(self._results):
+            return
+        item = self._results[idx]
+        app: HiFiApp = self.app  # type: ignore
+        if self._mode == "tracks":
+            app.push_screen(AddToPlaylistScreen([_track_to_storage(item)], item.get("title", "?")))
+        elif self._mode == "albums":
+            title = item.get("title", "Album")
+            app.notify(f"Loading '{title}'…")
+            def _load(album_id=item["id"], album_title=title):
+                try:
+                    data = api.get_album(album_id)
+                    tracks = [_track_to_storage(t) for t in data.get("items", [])]
+                    app.call_from_thread(app.push_screen, AddToPlaylistScreen(tracks, album_title))
+                except Exception as e:
+                    app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
+            threading.Thread(target=_load, daemon=True).start()
+
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._init_table()
@@ -256,7 +278,7 @@ class SearchPane(Container):
 # Album screen (pushed modal-style)
 # ---------------------------------------------------------------------------
 
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 
 
 class AlbumScreen(Screen):
@@ -264,6 +286,7 @@ class AlbumScreen(Screen):
         Binding("escape", "app.pop_screen", "Back"),
         Binding("enter", "play_selected", "Play"),
         Binding("a", "add_to_queue", "Add to Queue"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
     ]
 
     DEFAULT_CSS = """
@@ -348,11 +371,18 @@ class AlbumScreen(Screen):
             self._player.enqueue(_track_info(t))
             self.app.notify(f"Added to queue: {t.get('title', '?')}")  # type: ignore
 
+    def action_add_to_playlist(self) -> None:
+        idx = self.query_one("#album-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            t = self._tracks[idx]
+            self.app.push_screen(AddToPlaylistScreen([_track_to_storage(t)], t.get("title", "?")))  # type: ignore
+
 
 class ArtistScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_to_queue", "Add to Queue"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
     ]
 
     DEFAULT_CSS = """
@@ -499,6 +529,34 @@ class ArtistScreen(Screen):
                         app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
                 threading.Thread(target=_load, daemon=True).start()
 
+    def action_add_to_playlist(self) -> None:
+        app: HiFiApp = self.app  # type: ignore
+        try:
+            active_tab = self.query_one("#artist-tabs", TabbedContent).active
+        except NoMatches:
+            return
+        if active_tab == "tab-tracks":
+            idx = self.query_one("#tracks-table", DataTable).cursor_row
+            if idx < len(self._tracks):
+                t = self._tracks[idx]
+                app.push_screen(AddToPlaylistScreen([_track_to_storage(t)], t.get("title", "?")))
+        elif active_tab in ("tab-albums", "tab-eps"):
+            lst = self._albums if active_tab == "tab-albums" else self._eps_singles
+            table_id = "albums-table" if active_tab == "tab-albums" else "eps-table"
+            idx = self.query_one(f"#{table_id}", DataTable).cursor_row
+            if idx < len(lst):
+                album = lst[idx]
+                title = album.get("title", "Album")
+                app.notify(f"Loading '{title}'…")
+                def _load(aid=album["id"], atitle=title):
+                    try:
+                        data = api.get_album(aid)
+                        tracks = [_track_to_storage(t) for t in data.get("items", [])]
+                        app.call_from_thread(app.push_screen, AddToPlaylistScreen(tracks, atitle))
+                    except Exception as e:
+                        app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
+                threading.Thread(target=_load, daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # Queue pane
@@ -607,6 +665,7 @@ class QueuePane(Container):
 class RecommendationsPane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("a", "add_to_queue", "Add to Queue"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
     ]
 
     DEFAULT_CSS = """
@@ -674,6 +733,369 @@ class RecommendationsPane(Container):
             self._player.enqueue(_track_info(t))
             self.app.notify(f"Added to queue: {t.get('title', '?')}")  # type: ignore
 
+    def action_add_to_playlist(self) -> None:
+        idx = self.query_one("#rec-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            t = self._tracks[idx]
+            self.app.push_screen(AddToPlaylistScreen([_track_to_storage(t)], t.get("title", "?")))  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Confirm modal
+# ---------------------------------------------------------------------------
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Simple yes/no confirmation dialog."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+        Binding("escape", "cancel", "No", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmScreen {
+        align: center middle;
+    }
+    ConfirmScreen > Vertical {
+        width: 50;
+        height: auto;
+        background: $panel;
+        border: solid $warning;
+        padding: 1 2;
+    }
+    ConfirmScreen #confirm-msg {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    ConfirmScreen #confirm-hint {
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, message: str):
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self._message, id="confirm-msg")
+            yield Label("y = Yes    n / Esc = No", id="confirm-hint")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+# ---------------------------------------------------------------------------
+# Add-to-playlist modal
+# ---------------------------------------------------------------------------
+
+class AddToPlaylistScreen(ModalScreen):
+    """Overlay for selecting (or creating) a playlist to add tracks to."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("n", "new_playlist", "New Playlist"),
+    ]
+
+    DEFAULT_CSS = """
+    AddToPlaylistScreen {
+        align: center middle;
+    }
+    AddToPlaylistScreen > Vertical {
+        width: 60;
+        height: auto;
+        max-height: 30;
+        background: $panel;
+        border: solid $accent;
+        padding: 1 2;
+    }
+    AddToPlaylistScreen #atp-title {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    AddToPlaylistScreen #atp-hint {
+        color: $text-muted;
+    }
+    AddToPlaylistScreen DataTable {
+        height: auto;
+        max-height: 15;
+        margin: 1 0;
+    }
+    AddToPlaylistScreen #atp-input {
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, tracks: list[dict], label: str = ""):
+        super().__init__()
+        self._tracks = tracks
+        self._label = label
+        self._playlist_names: list[str] = []
+        self._input_visible = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"Add to Playlist — {self._label}", id="atp-title")
+            yield Label("Enter=add  n=new playlist  Esc=cancel", id="atp-hint")
+            yield DataTable(id="atp-table", cursor_type="row", zebra_stripes=True)
+            yield Input(placeholder="New playlist name…", id="atp-input")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#atp-table", DataTable)
+        table.add_columns("Playlist", "Tracks")
+        self.query_one("#atp-input", Input).display = False
+        self._refresh_table()
+
+    def _refresh_table(self) -> None:
+        pl = playlists.list_playlists()
+        self._playlist_names = [p["name"] for p in pl]
+        table = self.query_one("#atp-table", DataTable)
+        table.clear()
+        for p in pl:
+            table.add_row(p["name"], str(p["track_count"]))
+        if pl:
+            table.focus()
+        else:
+            self.action_new_playlist()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        idx = event.cursor_row
+        if idx < len(self._playlist_names):
+            self._do_add(self._playlist_names[idx])
+
+    def _do_add(self, name: str) -> None:
+        added = playlists.add_tracks(name, self._tracks)
+        self.app.notify(f"Added {added} track(s) to '{name}'")
+        self.dismiss()
+
+    def action_new_playlist(self) -> None:
+        inp = self.query_one("#atp-input", Input)
+        inp.display = True
+        inp.focus()
+        self._input_visible = True
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if name:
+            playlists.create_playlist(name)
+            self._do_add(name)
+        else:
+            event.input.display = False
+            self._input_visible = False
+            self.query_one("#atp-table", DataTable).focus()
+
+    def action_cancel(self) -> None:
+        if self._input_visible:
+            inp = self.query_one("#atp-input", Input)
+            inp.display = False
+            inp.value = ""
+            self._input_visible = False
+            self.query_one("#atp-table", DataTable).focus()
+        else:
+            self.dismiss()
+
+
+# ---------------------------------------------------------------------------
+# Playlist screen (pushed)
+# ---------------------------------------------------------------------------
+
+class PlaylistScreen(Screen):
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "dismiss", "Back"),
+        Binding("a", "add_to_queue", "Add to Queue"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("delete", "remove_track", "Remove"),
+    ]
+
+    DEFAULT_CSS = """
+    PlaylistScreen {
+        background: $surface;
+    }
+    PlaylistScreen #pl-header {
+        text-style: bold;
+        color: $accent;
+        margin: 1;
+    }
+    PlaylistScreen DataTable {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, name: str, player: Player):
+        super().__init__()
+        self._name = name
+        self._player = player
+        self._tracks: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"Playlist: {self._name}", id="pl-header")
+        yield DataTable(id="pl-table", cursor_type="row", zebra_stripes=True)
+        yield NowPlayingBar(id="now-playing")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one(NowPlayingBar).update_state(self._player.state)
+        self.query_one("#pl-table", DataTable).add_columns(
+            "Title", "Artist", "Album", "Quality", "Duration"
+        )
+        self._reload()
+
+    def _reload(self) -> None:
+        self._tracks = playlists.load_playlist(self._name)
+        table = self.query_one("#pl-table", DataTable)
+        table.clear()
+        for t in self._tracks:
+            table.add_row(
+                t.get("title", "?"), t.get("artist", "?"), t.get("album", "?"),
+                t.get("quality", "?"), api.format_duration(t.get("duration", 0))
+            )
+        self.query_one("#pl-header", Label).update(
+            f"Playlist: {self._name}  ({len(self._tracks)} tracks)"
+        )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        idx = event.cursor_row
+        if idx < len(self._tracks):
+            info = _storage_to_track_info(self._tracks[idx])
+            queue = [_storage_to_track_info(t) for t in self._tracks]
+            self._player.set_queue(queue, idx)
+            self.app.play_track_info(info)  # type: ignore
+
+    def action_add_to_queue(self) -> None:
+        idx = self.query_one("#pl-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            t = self._tracks[idx]
+            self._player.enqueue(_storage_to_track_info(t))
+            self.app.notify(f"Added to queue: {t.get('title', '?')}")  # type: ignore
+
+    def action_remove_track(self) -> None:
+        idx = self.query_one("#pl-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            title = self._tracks[idx].get("title", "?")
+            playlists.remove_track(self._name, idx)
+            self._reload()
+            self.app.notify(f"Removed '{title}' from playlist")  # type: ignore
+
+    def action_add_to_playlist(self) -> None:
+        idx = self.query_one("#pl-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            t = self._tracks[idx]
+            self.app.push_screen(AddToPlaylistScreen([t], t.get("title", "?")))  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Playlists pane
+# ---------------------------------------------------------------------------
+
+class PlaylistsPane(Container):
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("n", "new_playlist", "New Playlist"),
+        Binding("ctrl+r", "rename_playlist", "Rename"),
+        Binding("delete", "delete_playlist", "Delete"),
+    ]
+
+    DEFAULT_CSS = """
+    PlaylistsPane {
+        height: 1fr;
+    }
+    PlaylistsPane DataTable {
+        height: 1fr;
+        margin-top: 1;
+    }
+    PlaylistsPane #plp-hint {
+        margin: 1;
+        color: $text-muted;
+    }
+    PlaylistsPane #plp-input {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, player: Player, **kwargs):
+        super().__init__(**kwargs)
+        self._player = player
+        self._playlist_names: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield Label("n=new  Enter=open  ^r=rename  Del=delete", id="plp-hint")
+        yield Input(placeholder="New playlist name…", id="plp-input")
+        yield Input(placeholder="Rename playlist to…", id="plp-rename-input")
+        yield DataTable(id="plp-table", cursor_type="row", zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#plp-table", DataTable).add_columns("Playlist", "Tracks")
+        self.query_one("#plp-input", Input).display = False
+        self.query_one("#plp-rename-input", Input).display = False
+        self._refresh()
+
+    def on_show(self) -> None:
+        self._refresh()
+
+    def _refresh(self) -> None:
+        pl = playlists.list_playlists()
+        self._playlist_names = [p["name"] for p in pl]
+        table = self.query_one("#plp-table", DataTable)
+        table.clear()
+        for p in pl:
+            table.add_row(p["name"], str(p["track_count"]))
+        count = len(pl)
+        self.query_one("#plp-hint", Label).update(
+            f"{count} playlist(s)  —  n=new  Enter=open  ^r=rename  Del=delete"
+            if count else "No playlists yet  —  press n to create one"
+        )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        idx = event.cursor_row
+        if idx < len(self._playlist_names):
+            self.app.push_screen(PlaylistScreen(self._playlist_names[idx], self._player), lambda _: self._refresh())  # type: ignore
+
+    def action_new_playlist(self) -> None:
+        inp = self.query_one("#plp-input", Input)
+        inp.display = True
+        inp.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        name = event.value.strip()
+        if event.input.id == "plp-rename-input":
+            old_name = getattr(self, "_renaming", None)
+            if name and old_name:
+                playlists.rename_playlist(old_name, name)
+                self.app.notify(f"Renamed '{old_name}' to '{name}'")  # type: ignore
+            self._renaming = None
+        else:
+            if name:
+                playlists.create_playlist(name)
+                self.app.notify(f"Created playlist '{name}'")  # type: ignore
+        event.input.value = ""
+        event.input.display = False
+        self._refresh()
+        self.query_one("#plp-table", DataTable).focus()
+
+    def action_rename_playlist(self) -> None:
+        idx = self.query_one("#plp-table", DataTable).cursor_row
+        if idx < len(self._playlist_names):
+            self._renaming = self._playlist_names[idx]
+            inp = self.query_one("#plp-rename-input", Input)
+            inp.value = self._renaming
+            inp.display = True
+            inp.focus()
+
+    def action_delete_playlist(self) -> None:
+        idx = self.query_one("#plp-table", DataTable).cursor_row
+        if idx < len(self._playlist_names):
+            name = self._playlist_names[idx]
+            def _on_confirm(confirmed: bool) -> None:
+                if confirmed:
+                    playlists.delete_playlist(name)
+                    self._refresh()
+                    self.app.notify(f"Deleted playlist '{name}'")  # type: ignore
+            self.app.push_screen(ConfirmScreen(f"Delete playlist '{name}'?"), _on_confirm)  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # Main App
@@ -686,6 +1108,29 @@ def _track_info(data: dict) -> TrackInfo:
         artist=data.get("artist", {}).get("name", "?"),
         album=data.get("album", {}).get("title", "?"),
         duration=data.get("duration", 0),
+    )
+
+
+def _track_to_storage(data: dict) -> dict:
+    """Convert API track dict to playlist storage format."""
+    return {
+        "track_id": data["id"],
+        "title": data.get("title", "?"),
+        "artist": data.get("artist", {}).get("name", "?"),
+        "album": data.get("album", {}).get("title", "?"),
+        "duration": data.get("duration", 0),
+        "quality": _quality_label(data),
+    }
+
+
+def _storage_to_track_info(d: dict) -> TrackInfo:
+    """Convert playlist storage dict to TrackInfo."""
+    return TrackInfo(
+        track_id=d["track_id"],
+        title=d.get("title", "?"),
+        artist=d.get("artist", "?"),
+        album=d.get("album", "?"),
+        duration=d.get("duration", 0),
     )
 
 
@@ -736,6 +1181,8 @@ class HiFiApp(App):
                 yield RecommendationsPane(self._player, id="rec-pane")
             with TabPane("Queue", id="tab-queue"):
                 yield QueuePane(self._player, id="queue-pane")
+            with TabPane("Playlists", id="tab-playlists"):
+                yield PlaylistsPane(self._player, id="playlists-pane")
         yield NowPlayingBar(id="now-playing")
         yield Footer()
 
@@ -745,6 +1192,20 @@ class HiFiApp(App):
     # ------------------------------------------------------------------
     # Player
     # ------------------------------------------------------------------
+
+    def play_track_info(self, info: TrackInfo) -> None:
+        """Play a TrackInfo directly (used by PlaylistScreen)."""
+        def _run():
+            try:
+                url = api.get_stream_url(info.track_id)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Stream error: {e}", severity="error")
+                return
+            if url:
+                self._player.play(info, url)
+                self.call_from_thread(self._after_play, info)
+        threading.Thread(target=_run, daemon=True).start()
+        self.notify(f"Loading: {info.title}…")
 
     def play_track(self, track_data: dict) -> None:
         info = _track_info(track_data)
