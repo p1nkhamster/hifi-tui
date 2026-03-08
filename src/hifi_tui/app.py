@@ -102,8 +102,12 @@ def _quality_label(item: dict) -> str:
 
 class SearchPane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
+        Binding("f2", "mode_tracks", "Tracks"),
+        Binding("f3", "mode_albums", "Albums"),
+        Binding("f4", "mode_artists", "Artists"),
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("i", "show_metadata", "Info"),
     ]
 
     DEFAULT_CSS = """
@@ -263,6 +267,22 @@ class SearchPane(Container):
                     app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
             threading.Thread(target=_load, daemon=True).start()
 
+    def action_show_metadata(self) -> None:
+        idx = self.query_one("#search-table", DataTable).cursor_row
+        if not self._results or idx >= len(self._results):
+            return
+        if self._mode == "tracks":
+            self.app.push_screen(TrackMetadataScreen(self._results[idx]["id"]))  # type: ignore
+
+    def action_mode_tracks(self) -> None:
+        self.set_mode("tracks")
+
+    def action_mode_albums(self) -> None:
+        self.set_mode("albums")
+
+    def action_mode_artists(self) -> None:
+        self.set_mode("artists")
+
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._init_table()
@@ -287,6 +307,7 @@ class AlbumScreen(Screen):
         Binding("enter", "play_selected", "Play"),
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("i", "show_metadata", "Info"),
     ]
 
     DEFAULT_CSS = """
@@ -377,12 +398,18 @@ class AlbumScreen(Screen):
             t = self._tracks[idx]
             self.app.push_screen(AddToPlaylistScreen([_track_to_storage(t)], t.get("title", "?")))  # type: ignore
 
+    def action_show_metadata(self) -> None:
+        idx = self.query_one("#album-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["id"]))  # type: ignore
+
 
 class ArtistScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("i", "show_metadata", "Info"),
     ]
 
     DEFAULT_CSS = """
@@ -557,6 +584,16 @@ class ArtistScreen(Screen):
                         app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
                 threading.Thread(target=_load, daemon=True).start()
 
+    def action_show_metadata(self) -> None:
+        try:
+            active_tab = self.query_one("#artist-tabs", TabbedContent).active
+        except NoMatches:
+            return
+        if active_tab == "tab-tracks":
+            idx = self.query_one("#tracks-table", DataTable).cursor_row
+            if idx < len(self._tracks):
+                self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["id"]))  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # Queue pane
@@ -564,6 +601,8 @@ class ArtistScreen(Screen):
 
 class QueuePane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
+        Binding("i", "show_metadata", "Info"),
+        Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("delete", "remove_track", "Remove"),
         Binding("ctrl+up", "move_up", "Move Up"),
         Binding("ctrl+down", "move_down", "Move Down"),
@@ -595,7 +634,7 @@ class QueuePane(Container):
 
     def on_mount(self) -> None:
         self.query_one("#queue-table", DataTable).add_columns(
-            " ", "Title", "Artist", "Album", "Duration"
+            " ", "Title", "Artist", "Album", "Quality", "Duration"
         )
 
     def update_state(self, state: PlayerState) -> None:
@@ -617,7 +656,7 @@ class QueuePane(Container):
         for i, t in enumerate(state.queue):
             marker = "▶" if i == state.queue_index else ""
             table.add_row(marker, t.title, t.artist, t.album,
-                          api.format_duration(t.duration))
+                          t.quality, api.format_duration(t.duration))
         count = len(state.queue)
         self.query_one("#queue-label", Label).update(
             f"{count} track{'s' if count != 1 else ''} in queue"
@@ -643,6 +682,27 @@ class QueuePane(Container):
         idx = self.query_one("#queue-table", DataTable).cursor_row
         self._player.dequeue(idx)
 
+    def action_add_to_playlist(self) -> None:
+        idx = self.query_one("#queue-table", DataTable).cursor_row
+        queue = self._player.state.queue
+        if idx < len(queue):
+            t = queue[idx]
+            track = {
+                "track_id": t.track_id,
+                "title": t.title,
+                "artist": t.artist,
+                "album": t.album,
+                "duration": t.duration,
+                "quality": t.quality,
+            }
+            self.app.push_screen(AddToPlaylistScreen([track], t.title))  # type: ignore
+
+    def action_show_metadata(self) -> None:
+        idx = self.query_one("#queue-table", DataTable).cursor_row
+        queue = self._player.state.queue
+        if idx < len(queue):
+            self.app.push_screen(TrackMetadataScreen(queue[idx].track_id))  # type: ignore
+
     def action_move_up(self) -> None:
         table = self.query_one("#queue-table", DataTable)
         idx = table.cursor_row
@@ -666,6 +726,7 @@ class RecommendationsPane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("i", "show_metadata", "Info"),
     ]
 
     DEFAULT_CSS = """
@@ -693,7 +754,7 @@ class RecommendationsPane(Container):
 
     def on_mount(self) -> None:
         table = self.query_one("#rec-table", DataTable)
-        table.add_columns("Title", "Artist", "Album", "Duration")
+        table.add_columns("Title", "Artist", "Album", "Quality", "Duration")
 
     def load_for(self, track_id: int, track_title: str) -> None:
         self.query_one("#rec-label", Label).update(
@@ -717,7 +778,7 @@ class RecommendationsPane(Container):
             artist = t.get("artist", {}).get("name", "?")
             album = t.get("album", {}).get("title", "?")
             dur = api.format_duration(t.get("duration", 0))
-            table.add_row(t.get("title", "?"), artist, album, dur)
+            table.add_row(t.get("title", "?"), artist, album, _quality_label(t), dur)
         self._player.set_url_loader(lambda tid: api.get_stream_url(tid))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -738,6 +799,11 @@ class RecommendationsPane(Container):
         if idx < len(self._tracks):
             t = self._tracks[idx]
             self.app.push_screen(AddToPlaylistScreen([_track_to_storage(t)], t.get("title", "?")))  # type: ignore
+
+    def action_show_metadata(self) -> None:
+        idx = self.query_one("#rec-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["id"]))  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +967,112 @@ class AddToPlaylistScreen(ModalScreen):
 
 
 # ---------------------------------------------------------------------------
+# Track metadata modal
+# ---------------------------------------------------------------------------
+
+class TrackMetadataScreen(ModalScreen):
+    """Fetches and displays full track metadata."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "dismiss", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    TrackMetadataScreen {
+        align: center middle;
+    }
+    TrackMetadataScreen > Vertical {
+        width: 64;
+        height: auto;
+        background: $panel;
+        border: solid $accent;
+        padding: 1 2;
+    }
+    TrackMetadataScreen #meta-title {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    TrackMetadataScreen #meta-body {
+        color: $text;
+    }
+    TrackMetadataScreen #meta-hint {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, track_id: int):
+        super().__init__()
+        self._track_id = track_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Loading…", id="meta-title")
+            yield Label("", id="meta-body")
+            yield Label("Esc = close", id="meta-hint")
+
+    def on_mount(self) -> None:
+        def _load():
+            try:
+                d = api.get_track_info(self._track_id)
+                self.app.call_from_thread(self._populate, d)
+            except Exception as e:
+                self.app.call_from_thread(
+                    self.query_one("#meta-body", Label).update,
+                    f"Error: {e}"
+                )
+        threading.Thread(target=_load, daemon=True).start()
+
+    def _populate(self, d: dict) -> None:
+        title = d.get("title", "?")
+        version = d.get("version")
+        if version:
+            title += f" ({version})"
+        artist = d.get("artist", {}).get("name", "?")
+        album = d.get("album", {}).get("title", "?")
+        track_num = d.get("trackNumber", "?")
+        vol_num = d.get("volumeNumber")
+        track_str = f"{track_num}" if vol_num in (None, 1) else f"{track_num} (disc {vol_num})"
+        duration = api.format_duration(d.get("duration", 0))
+        quality = _quality_label(d)
+        bpm = d.get("bpm")
+        key = d.get("key")
+        scale = d.get("keyScale", "")
+        explicit = "Yes" if d.get("explicit") else "No"
+        popularity = d.get("popularity", "?")
+        isrc = d.get("isrc", "?")
+        copyright_ = d.get("copyright", "?")
+        modes = ", ".join(d.get("audioModes", [])) or "?"
+
+        def row(label: str, value) -> str:
+            return f"  {label:<14} {value}"
+
+        lines = [
+            row("Title", title),
+            row("Artist", artist),
+            row("Album", album),
+            row("Track", track_str),
+            row("Duration", duration),
+            row("Quality", quality),
+            row("Audio mode", modes),
+        ]
+        if bpm:
+            lines.append(row("BPM", bpm))
+        if key:
+            lines.append(row("Key", f"{key} {scale.lower()}".strip()))
+        lines += [
+            row("Explicit", explicit),
+            row("Popularity", popularity),
+            row("ISRC", isrc),
+            row("Copyright", copyright_),
+        ]
+
+        self.query_one("#meta-title", Label).update(f"Track info — {d.get('id', '')}")
+        self.query_one("#meta-body", Label).update("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
 # Playlist screen (pushed)
 # ---------------------------------------------------------------------------
 
@@ -909,6 +1081,7 @@ class PlaylistScreen(Screen):
         Binding("escape", "dismiss", "Back"),
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("i", "show_metadata", "Info"),
         Binding("delete", "remove_track", "Remove"),
     ]
 
@@ -986,6 +1159,11 @@ class PlaylistScreen(Screen):
         if idx < len(self._tracks):
             t = self._tracks[idx]
             self.app.push_screen(AddToPlaylistScreen([t], t.get("title", "?")))  # type: ignore
+
+    def action_show_metadata(self) -> None:
+        idx = self.query_one("#pl-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["track_id"]))  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -1108,6 +1286,7 @@ def _track_info(data: dict) -> TrackInfo:
         artist=data.get("artist", {}).get("name", "?"),
         album=data.get("album", {}).get("title", "?"),
         duration=data.get("duration", 0),
+        quality=_quality_label(data),
     )
 
 
@@ -1131,6 +1310,7 @@ def _storage_to_track_info(d: dict) -> TrackInfo:
         artist=d.get("artist", "?"),
         album=d.get("album", "?"),
         duration=d.get("duration", 0),
+        quality=d.get("quality", ""),
     )
 
 
@@ -1161,11 +1341,10 @@ class HiFiApp(App):
         Binding("minus", "vol_down", "Vol-"),
         Binding("right", "seek_fwd", "→10s"),
         Binding("left", "seek_bck", "←10s"),
-        Binding("f2", "mode_tracks", "Tracks"),
-        Binding("f3", "mode_albums", "Albums"),
-        Binding("f4", "mode_artists", "Artists"),
         Binding("s", "shuffle", "Shuffle"),
         Binding("r", "repeat", "Repeat"),
+        Binding("ctrl+l", "add_playing_to_playlist", "Add Playing to Playlist"),
+        Binding("ctrl+i", "show_playing_metadata", "Playing Info"),
     ]
 
     def __init__(self):
@@ -1272,24 +1451,6 @@ class HiFiApp(App):
     def action_seek_bck(self) -> None:
         self._player.seek_relative(-10)
 
-    def action_mode_tracks(self) -> None:
-        try:
-            self.query_one("#search-pane", SearchPane).set_mode("tracks")
-        except NoMatches:
-            pass
-
-    def action_mode_albums(self) -> None:
-        try:
-            self.query_one("#search-pane", SearchPane).set_mode("albums")
-        except NoMatches:
-            pass
-
-    def action_mode_artists(self) -> None:
-        try:
-            self.query_one("#search-pane", SearchPane).set_mode("artists")
-        except NoMatches:
-            pass
-
     def action_shuffle(self) -> None:
         self._player.toggle_shuffle()
         state = self._player.state
@@ -1300,6 +1461,29 @@ class HiFiApp(App):
         self._player.cycle_repeat()
         labels = {RepeatMode.NONE: "Off", RepeatMode.QUEUE: "Repeat Queue", RepeatMode.TRACK: "Repeat Track"}
         self.notify(f"Repeat: {labels[self._player.state.repeat]}")
+
+    def action_add_playing_to_playlist(self) -> None:
+        state = self._player.state
+        if state.track is None:
+            self.notify("Nothing is playing", severity="warning")
+            return
+        t = state.track
+        track = {
+            "track_id": t.track_id,
+            "title": t.title,
+            "artist": t.artist,
+            "album": t.album,
+            "duration": t.duration,
+            "quality": t.quality,
+        }
+        self.push_screen(AddToPlaylistScreen([track], t.title))
+
+    def action_show_playing_metadata(self) -> None:
+        state = self._player.state
+        if state.track is None:
+            self.notify("Nothing is playing", severity="warning")
+            return
+        self.push_screen(TrackMetadataScreen(state.track.track_id))
 
     def action_quit(self) -> None:
         self._player.quit()

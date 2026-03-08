@@ -28,6 +28,7 @@ class TrackInfo:
     artist: str
     album: str
     duration: int  # seconds
+    quality: str = ""
 
 
 @dataclass
