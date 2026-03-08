@@ -7,13 +7,13 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Container, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
     Button,
     DataTable,
-    Footer,
     Header,
     Input,
     Label,
@@ -337,7 +337,6 @@ class AlbumScreen(Screen):
         yield Label(f"Album: {self._album_title}", id="album-header")
         yield DataTable(id="album-table", cursor_type="row", zebra_stripes=True)
         yield NowPlayingBar(id="now-playing")
-        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one(NowPlayingBar).update_state(self._player.state)
@@ -455,7 +454,6 @@ class ArtistScreen(Screen):
             with TabPane("EP & Singles", id="tab-eps"):
                 yield DataTable(id="eps-table", cursor_type="row", zebra_stripes=True)
         yield NowPlayingBar(id="now-playing")
-        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one(NowPlayingBar).update_state(self._player.state)
@@ -1111,7 +1109,6 @@ class PlaylistScreen(Screen):
         yield Label(f"Playlist: {self._name}", id="pl-header")
         yield DataTable(id="pl-table", cursor_type="row", zebra_stripes=True)
         yield NowPlayingBar(id="now-playing")
-        yield Footer()
 
     def on_mount(self) -> None:
         self.query_one(NowPlayingBar).update_state(self._player.state)
@@ -1441,6 +1438,70 @@ class SettingsPane(Container):
 
 
 # ---------------------------------------------------------------------------
+# Command palette
+# ---------------------------------------------------------------------------
+
+_HIFI_BINDINGS: list[tuple[str, str, str | None]] = [
+    # Global playback
+    ("Space",   "Pause / Resume playback",                  "pause"),
+    ("N",       "Next track",                               "next_track"),
+    ("P",       "Previous track",                           "prev_track"),
+    ("+ / =",   "Volume up",                               "vol_up"),
+    ("-",       "Volume down",                             "vol_down"),
+    ("→",       "Seek forward 10 seconds",                  "seek_fwd"),
+    ("←",       "Seek back 10 seconds",                     "seek_bck"),
+    ("S",       "Toggle shuffle",                           "shuffle"),
+    ("R",       "Toggle repeat",                            "repeat"),
+    ("Ctrl+I",  "Show info for currently playing track",    "show_playing_metadata"),
+    ("Ctrl+L",  "Add currently playing track to playlist",  "add_playing_to_playlist"),
+    ("Q",       "Quit",                                     "quit"),
+    # Context-specific (all tabs)
+    ("I",       "Show info for selected track",             None),
+    ("A",       "Add selected track / album to queue",      None),
+    ("L",       "Add selected track to playlist",           None),
+    # Search tab
+    ("F2",      "[Search] Switch to Tracks search mode",    None),
+    ("F3",      "[Search] Switch to Albums search mode",    None),
+    ("F4",      "[Search] Switch to Artists search mode",   None),
+    # Queue tab
+    ("Ctrl+↑",  "[Queue] Move track up",                    None),
+    ("Ctrl+↓",  "[Queue] Move track down",                  None),
+    ("Delete",  "[Queue] Remove selected track",            None),
+    # Playlists tab
+    ("N",       "[Playlists] Create new playlist",          None),
+    ("Ctrl+R",  "[Playlists] Rename selected playlist",     None),
+    ("Delete",  "[Playlists] Delete selected playlist",     None),
+]
+
+
+class HifiCommandProvider(Provider):
+    """Lists all hifi-tui keybindings in the command palette."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for key, desc, action in _HIFI_BINDINGS:
+            text = f"{key}  —  {desc}"
+            score = matcher.match(text)
+            if score > 0:
+                if action:
+                    async def cmd(a: str = action) -> None:
+                        await self.app.run_action(a)
+                    yield Hit(score, matcher.highlight(text), cmd, text=text, help=desc)
+                else:
+                    yield Hit(score, matcher.highlight(text), lambda: None, text=text, help=desc)
+
+    async def discover(self) -> Hits:
+        for key, desc, action in _HIFI_BINDINGS:
+            text = f"{key}  —  {desc}"
+            if action:
+                async def cmd(a: str = action) -> None:
+                    await self.app.run_action(a)
+                yield DiscoveryHit(text, cmd, text=text, help=desc)
+            else:
+                yield DiscoveryHit(text, lambda: None, text=text, help=desc)
+
+
+# ---------------------------------------------------------------------------
 # Main App
 # ---------------------------------------------------------------------------
 
@@ -1483,7 +1544,7 @@ class HiFiApp(App):
     """HiFi TUI — browse and stream Tidal music."""
 
     TITLE = "HiFi TUI"
-    SUB_TITLE = "Tidal Music Browser"
+    SUB_TITLE = "Tidal Music Browser  ·  ^P: keybinds"
 
     CSS = """
     Screen {
@@ -1512,6 +1573,8 @@ class HiFiApp(App):
         Binding("ctrl+i", "show_playing_metadata", "Playing Info"),
     ]
 
+    COMMANDS = {HifiCommandProvider}
+
     def __init__(self):
         super().__init__()
         self._player = Player(on_state_change=self._on_player_state)
@@ -1533,7 +1596,6 @@ class HiFiApp(App):
             with TabPane("Settings", id="tab-settings"):
                 yield SettingsPane(id="settings-pane")
         yield NowPlayingBar(id="now-playing")
-        yield Footer()
 
     def on_mount(self) -> None:
         self._player.set_url_loader(lambda tid: api.get_stream_url(tid))
