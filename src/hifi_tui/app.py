@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
@@ -1462,6 +1464,50 @@ class SettingsPane(Container):
 
 
 # ---------------------------------------------------------------------------
+# Queue persistence
+# ---------------------------------------------------------------------------
+
+_QUEUE_PATH = Path.home() / ".local" / "share" / "hifi-tui" / "queue.json"
+_QUEUE_SAVE_LIMIT = 100
+
+
+def _save_queue(queue: list[TrackInfo], index: int) -> None:
+    """Save queue from current index onward (up to _QUEUE_SAVE_LIMIT tracks)."""
+    if not queue or index < 0:
+        return
+    tracks = queue[index : index + _QUEUE_SAVE_LIMIT]
+    _QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _QUEUE_PATH.write_text(json.dumps({
+        "tracks": [
+            {"track_id": t.track_id, "title": t.title, "artist": t.artist,
+             "album": t.album, "duration": t.duration, "quality": t.quality}
+            for t in tracks
+        ],
+    }, indent=2))
+
+
+def _load_queue() -> list[TrackInfo]:
+    """Load persisted queue. Returns empty list if none saved."""
+    if not _QUEUE_PATH.exists():
+        return []
+    try:
+        data = json.loads(_QUEUE_PATH.read_text())
+        return [
+            TrackInfo(
+                track_id=t["track_id"],
+                title=t.get("title", "?"),
+                artist=t.get("artist", "?"),
+                album=t.get("album", "?"),
+                duration=t.get("duration", 0),
+                quality=t.get("quality", ""),
+            )
+            for t in data.get("tracks", [])
+        ]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Command palette
 # ---------------------------------------------------------------------------
 
@@ -1609,6 +1655,7 @@ class HiFiApp(App):
         self._lastfm = lastfm.LastFM()
         self._scrobbler = lastfm.Scrobbler(self._lastfm)
         self._last_scrobble_track_id: int | None = None
+        self._last_saved_queue_version: int = -1
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1627,6 +1674,13 @@ class HiFiApp(App):
 
     def on_mount(self) -> None:
         self._player.set_url_loader(lambda tid: api.get_stream_url(tid))
+        tracks = _load_queue()
+        if tracks:
+            self.call_after_refresh(self._restore_queue, tracks)
+
+    def _restore_queue(self, tracks: list[TrackInfo]) -> None:
+        self._player.set_queue(tracks, 0)
+        self._update_all_bars(self._player.state)
 
     # ------------------------------------------------------------------
     # Player
@@ -1685,6 +1739,15 @@ class HiFiApp(App):
                 bar.update_state(state)
             for pane in screen.query(QueuePane):
                 pane.update_state(state)
+        # Queue persistence
+        if state.queue_version != self._last_saved_queue_version:
+            self._last_saved_queue_version = state.queue_version
+            queue_snapshot = list(state.queue)
+            queue_index = state.queue_index
+            threading.Thread(
+                target=lambda: _save_queue(queue_snapshot, queue_index),
+                daemon=True,
+            ).start()
         # Scrobbling
         if state.track is None:
             self._last_scrobble_track_id = None
