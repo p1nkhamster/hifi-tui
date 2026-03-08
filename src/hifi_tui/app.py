@@ -11,17 +11,19 @@ from textual.containers import Container, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import (
+    Button,
     DataTable,
     Footer,
     Header,
     Input,
     Label,
+    Link,
     Static,
     TabbedContent,
     TabPane,
 )
 
-from . import api, playlists
+from . import api, lastfm, playlists
 from .player import Player, PlayerState, RepeatMode, TrackInfo
 
 
@@ -1276,6 +1278,169 @@ class PlaylistsPane(Container):
 
 
 # ---------------------------------------------------------------------------
+# Settings pane (Last.fm)
+# ---------------------------------------------------------------------------
+
+class SettingsPane(Container):
+    DEFAULT_CSS = """
+    SettingsPane {
+        height: 1fr;
+        padding: 1 2;
+    }
+    SettingsPane #s-heading {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+    SettingsPane #s-status {
+        margin-bottom: 1;
+    }
+    SettingsPane #s-auth-url {
+        height: auto;
+        margin-bottom: 1;
+    }
+    SettingsPane #s-auth-url Label {
+        color: $text-muted;
+    }
+    SettingsPane #s-auth-url Link {
+        color: $warning;
+    }
+    SettingsPane .s-label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    SettingsPane #s-api-hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+    SettingsPane Button {
+        margin-top: 1;
+        width: 30;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("Last.fm", id="s-heading")
+        yield Label("", id="s-status")
+        yield Container(
+            Label("Get your API key and secret at "),
+            Link("last.fm/api/account/create", url="https://www.last.fm/api/account/create"),
+            id="s-api-hint",
+        )
+        yield Label("API Key:", classes="s-label")
+        yield Input(placeholder="Paste your Last.fm API key", id="s-api-key")
+        yield Label("API Secret:", classes="s-label")
+        yield Input(placeholder="Paste your Last.fm API secret", password=True, id="s-api-secret")
+        yield Button("Save Credentials", id="s-btn-save", variant="primary")
+        yield Container(id="s-auth-url")
+        yield Button("Get Auth URL", id="s-btn-auth", variant="success")
+        yield Button("Complete Auth (after browser approval)", id="s-btn-complete", variant="success")
+        yield Button("Disconnect", id="s-btn-disconnect", variant="error")
+
+    def on_mount(self) -> None:
+        self._pending_token: str | None = None
+        self._prefill()
+        self._refresh()
+
+    def on_show(self) -> None:
+        self._prefill()
+        self._refresh()
+
+    def _prefill(self) -> None:
+        lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+        self.query_one("#s-api-key", Input).value = lfm.api_key
+        self.query_one("#s-api-secret", Input).value = lfm.api_secret
+
+    def _refresh(self) -> None:
+        lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+        if lfm.is_authenticated:
+            status = f"Status: Connected as {lfm.username}"
+        elif lfm.is_configured:
+            status = "Status: Credentials saved — not connected yet"
+        else:
+            status = "Status: Not configured"
+        self.query_one("#s-status", Label).update(status)
+
+        self.query_one("#s-api-hint").display = not lfm.is_authenticated
+        self.query_one("#s-btn-auth").display = lfm.is_configured and not lfm.is_authenticated
+        self.query_one("#s-btn-complete").display = bool(self._pending_token)
+        self.query_one("#s-btn-disconnect").display = lfm.is_authenticated
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "s-api-key":
+            self.query_one("#s-api-secret", Input).focus()
+        elif event.input.id == "s-api-secret":
+            self._save_credentials()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "s-btn-save":
+            self._save_credentials()
+        elif bid == "s-btn-auth":
+            self._start_auth()
+        elif bid == "s-btn-complete":
+            self._complete_auth()
+        elif bid == "s-btn-disconnect":
+            self._disconnect()
+
+    def _save_credentials(self) -> None:
+        api_key = self.query_one("#s-api-key", Input).value.strip()
+        api_secret = self.query_one("#s-api-secret", Input).value.strip()
+        if api_key and api_secret:
+            lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+            lfm.set_credentials(api_key, api_secret)
+            self.app.notify("Last.fm credentials saved")  # type: ignore
+            self._refresh()
+        else:
+            self.app.notify("Fill in both API key and secret", severity="warning")  # type: ignore
+
+    def _start_auth(self) -> None:
+        lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+        self.app.notify("Getting auth token…")  # type: ignore
+        def _get():
+            try:
+                token = lfm.get_auth_token()
+                url = lfm.get_auth_url(token)
+                self.app.call_from_thread(self._on_token, token, url)
+            except Exception as e:
+                self.app.call_from_thread(self.app.notify, f"Last.fm: {e}", severity="error")
+        threading.Thread(target=_get, daemon=True).start()
+
+    def _on_token(self, token: str, url: str) -> None:
+        self._pending_token = token
+        container = self.query_one("#s-auth-url", Container)
+        container.remove_children()
+        container.mount(Label("Open in your browser:"))
+        container.mount(Link(url, url=url))
+        self._refresh()
+
+    def _complete_auth(self) -> None:
+        if not self._pending_token:
+            return
+        token = self._pending_token
+        lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+        def _complete():
+            try:
+                username = lfm.complete_auth(token)
+                self.app.call_from_thread(self._on_auth_complete, username)
+            except Exception as e:
+                self.app.call_from_thread(self.app.notify, f"Last.fm auth failed: {e}", severity="error")
+        threading.Thread(target=_complete, daemon=True).start()
+
+    def _on_auth_complete(self, username: str) -> None:
+        self._pending_token = None
+        self.query_one("#s-auth-url", Container).remove_children()
+        self._refresh()
+        self.app.notify(f"Last.fm: connected as {username}!")  # type: ignore
+
+    def _disconnect(self) -> None:
+        lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
+        lfm.disconnect()
+        self._refresh()
+        self.app.notify("Disconnected from Last.fm")  # type: ignore
+
+
+# ---------------------------------------------------------------------------
 # Main App
 # ---------------------------------------------------------------------------
 
@@ -1350,6 +1515,9 @@ class HiFiApp(App):
     def __init__(self):
         super().__init__()
         self._player = Player(on_state_change=self._on_player_state)
+        self._lastfm = lastfm.LastFM()
+        self._scrobbler = lastfm.Scrobbler(self._lastfm)
+        self._last_scrobble_track_id: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1362,6 +1530,8 @@ class HiFiApp(App):
                 yield QueuePane(self._player, id="queue-pane")
             with TabPane("Playlists", id="tab-playlists"):
                 yield PlaylistsPane(self._player, id="playlists-pane")
+            with TabPane("Settings", id="tab-settings"):
+                yield SettingsPane(id="settings-pane")
         yield NowPlayingBar(id="now-playing")
         yield Footer()
 
@@ -1425,6 +1595,20 @@ class HiFiApp(App):
                 bar.update_state(state)
             for pane in screen.query(QueuePane):
                 pane.update_state(state)
+        # Scrobbling
+        if state.track is None:
+            self._last_scrobble_track_id = None
+            self._scrobbler.reset()
+        elif state.playing:
+            if state.track.track_id != self._last_scrobble_track_id:
+                self._last_scrobble_track_id = state.track.track_id
+                self._scrobbler.track_started(state.track)
+            self._scrobbler.update(
+                state.position,
+                on_error=lambda e: self.call_from_thread(
+                    self.notify, f"Last.fm: {e}", severity="warning"
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Actions
