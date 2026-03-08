@@ -79,6 +79,14 @@ def remove_track(name: str, index: int) -> None:
         save_playlist(name, tracks)
 
 
+def move_track(name: str, from_index: int, to_index: int) -> None:
+    tracks = load_playlist(name)
+    if 0 <= from_index < len(tracks) and 0 <= to_index < len(tracks):
+        track = tracks.pop(from_index)
+        tracks.insert(to_index, track)
+        save_playlist(name, tracks)
+
+
 def rename_playlist(old_name: str, new_name: str) -> None:
     """Rename a playlist: update the name field and move to new slug filename."""
     old_path = _path(old_name)

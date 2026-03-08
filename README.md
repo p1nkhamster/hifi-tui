@@ -8,7 +8,7 @@ A Linux TUI for browsing and streaming music via the [HiFi API](https://github.c
 - **Stream** lossless and hi-res audio via mpv
 - **Queue** management with reordering and shuffle/repeat modes
 - **Recommendations** based on currently playing track
-- **Playlists** — create, rename, delete, and reorder local playlists
+- **Playlists** — create, rename, delete, and reorder tracks within playlists
 - **Track metadata** modal showing quality, BPM, key, ISRC, and more
 - **Last.fm scrobbling** with now-playing and scrobble support
 - **Command palette** (`Ctrl+P`) listing all keybindings
@@ -91,6 +91,13 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 | `n` | New playlist |
 | `Ctrl+R` | Rename selected playlist |
 | `Delete` | Delete selected playlist |
+
+### Inside a playlist
+
+| Key | Action |
+|-----|--------|
+| `Shift+↑` / `Shift+↓` | Move track up / down |
+| `Delete` | Remove track from playlist |
 
 ## Last.fm
 

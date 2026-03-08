@@ -1083,6 +1083,8 @@ class PlaylistScreen(Screen):
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
         Binding("delete", "remove_track", "Remove"),
+        Binding("shift+up", "move_up", "Move Up"),
+        Binding("shift+down", "move_down", "Move Down"),
     ]
 
     DEFAULT_CSS = """
@@ -1163,6 +1165,22 @@ class PlaylistScreen(Screen):
         idx = self.query_one("#pl-table", DataTable).cursor_row
         if idx < len(self._tracks):
             self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["track_id"]))  # type: ignore
+
+    def action_move_up(self) -> None:
+        table = self.query_one("#pl-table", DataTable)
+        idx = table.cursor_row
+        if idx > 0:
+            playlists.move_track(self._name, idx, idx - 1)
+            self._reload()
+            table.move_cursor(row=idx - 1)
+
+    def action_move_down(self) -> None:
+        table = self.query_one("#pl-table", DataTable)
+        idx = table.cursor_row
+        if idx < len(self._tracks) - 1:
+            playlists.move_track(self._name, idx, idx + 1)
+            self._reload()
+            table.move_cursor(row=idx + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1468,9 +1486,13 @@ _HIFI_BINDINGS: list[tuple[str, str, str | None]] = [
     ("Ctrl+↓",  "[Queue] Move track down",                  None),
     ("Delete",  "[Queue] Remove selected track",            None),
     # Playlists tab
-    ("N",       "[Playlists] Create new playlist",          None),
-    ("Ctrl+R",  "[Playlists] Rename selected playlist",     None),
-    ("Delete",  "[Playlists] Delete selected playlist",     None),
+    ("N",        "[Playlists] Create new playlist",              None),
+    ("Ctrl+R",   "[Playlists] Rename selected playlist",         None),
+    ("Delete",   "[Playlists] Delete selected playlist",         None),
+    # Inside a playlist
+    ("Shift+↑",  "[Playlist] Move track up",                     None),
+    ("Shift+↓",  "[Playlist] Move track down",                   None),
+    ("Delete",   "[Playlist] Remove track from playlist",         None),
 ]
 
 
