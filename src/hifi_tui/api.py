@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import base64
 import http.server
+import os
 import socketserver
 import tempfile
 import threading
-import os
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import requests
 
-# Holds a reference to the currently-active MPD HTTP server so it stays alive
-# while a DASH track is playing. Replaced on each new DASH track.
 _active_mpd_server: socketserver.TCPServer | None = None
 _active_mpd_tmpfile: str | None = None
 
@@ -166,17 +164,34 @@ def get_artist(artist_id: int) -> dict:
 # Streaming
 # ---------------------------------------------------------------------------
 
-def _serve_dash_manifest(mpd_content: str) -> str:
-    """
-    Write an MPD string to a temp file, spin up a one-file HTTP server on
-    localhost, and return the http://127.0.0.1:PORT/manifest.mpd URL.
+def _parse_mpd_mime(mpd_xml: str) -> str:
+    """Return the dominant audio mime type from a DASH MPD (e.g. 'audio/flac')."""
+    try:
+        ns = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
+        root = ET.fromstring(mpd_xml)
+        for adapt in root.findall(".//mpd:AdaptationSet", ns):
+            if adapt.get("contentType", "") not in ("audio", ""):
+                continue
+            codecs = adapt.get("codecs", "")
+            for rep in adapt.findall("mpd:Representation", ns):
+                codecs = rep.get("codecs") or codecs
+            if codecs.startswith("flac"):
+                return "audio/flac"
+            if codecs.startswith("ec-3") or codecs.startswith("ac-3"):
+                return "audio/eac3"
+    except Exception:
+        pass
+    return "audio/mp4"
 
-    mpv fetches the MPD over HTTP so FFmpeg's DASH demuxer has unrestricted
-    protocol access for the HTTPS segment URLs inside the manifest.
+
+def _serve_dash_manifest(mpd_content: str) -> str:
+    """Serve an MPD string over a local HTTP server and return the URL.
+
+    mpv fetches the MPD over HTTP so its DASH demuxer has full protocol access
+    for the HTTPS segment URLs embedded in the manifest.
     """
     global _active_mpd_server, _active_mpd_tmpfile
 
-    # Shut down the previous server/file if any
     if _active_mpd_server is not None:
         try:
             _active_mpd_server.shutdown()
@@ -210,8 +225,7 @@ def _serve_dash_manifest(mpd_content: str) -> str:
     server.allow_reuse_address = True
     port = server.server_address[1]
 
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
     _active_mpd_server = server
     _active_mpd_tmpfile = mpd_path
@@ -220,14 +234,6 @@ def _serve_dash_manifest(mpd_content: str) -> str:
 
 
 def get_stream_url(track_id: int, quality: str = "HI_RES_LOSSLESS") -> str | None:
-    """
-    Resolve a direct playable URL from the /track/ manifest.
-
-    The manifest is base64-encoded.  It's either:
-      - A JSON object with a 'urls' list  (FLAC/direct)
-      - An MPEG-DASH XML string (.mpd)
-    Raises on failure so callers can surface the real error.
-    """
     import json as _json
 
     fallbacks = [quality, "LOSSLESS", "HIGH", "LOW"]
@@ -252,7 +258,6 @@ def get_stream_url(track_id: int, quality: str = "HI_RES_LOSSLESS") -> str | Non
 
     raw = base64.b64decode(manifest_b64 + "==").decode("utf-8")
 
-    # Try JSON first (direct FLAC streams)
     try:
         manifest_json = _json.loads(raw)
         urls = manifest_json.get("urls") or manifest_json.get("url")
@@ -263,10 +268,52 @@ def get_stream_url(track_id: int, quality: str = "HI_RES_LOSSLESS") -> str | Non
     except _json.JSONDecodeError:
         pass
 
-    # DASH XML manifest — serve it via a local HTTP server so mpv can stream it
-    # with full protocol access (the HTTPS segment URLs in the MPD won't be
-    # blocked by FFmpeg's file-protocol whitelist).
     return _serve_dash_manifest(raw)
+
+
+def get_track_manifest(track_id: int, quality: str = "HI_RES_LOSSLESS") -> tuple[str, str, str]:
+    """
+    Return (kind, content, mime_type) for a track without starting any server.
+    kind is 'url' (direct stream URL) or 'dash' (raw MPD XML string).
+    mime_type is the actual codec mime type from the manifest (e.g. 'audio/flac',
+    'audio/mp4'); empty string for DASH streams.
+    """
+    import json as _json
+
+    fallbacks = [quality, "LOSSLESS", "HIGH", "LOW"]
+    seen: set[str] = set()
+    data = None
+    last_exc: Exception | None = None
+    for q in fallbacks:
+        if q in seen:
+            continue
+        seen.add(q)
+        try:
+            data = _get("/track/", id=track_id, quality=q)["data"]
+            break
+        except Exception as e:
+            last_exc = e
+    if data is None:
+        raise last_exc or RuntimeError(f"No stream available for track {track_id}")
+
+    manifest_b64 = data.get("manifest", "")
+    if not manifest_b64:
+        raise RuntimeError(f"No manifest for track {track_id}")
+
+    raw = base64.b64decode(manifest_b64 + "==").decode("utf-8")
+    try:
+        manifest_json = _json.loads(raw)
+        urls = manifest_json.get("urls") or manifest_json.get("url")
+        mime_type = manifest_json.get("mimeType", "")
+        if isinstance(urls, list) and urls:
+            return ("url", urls[0], mime_type)
+        if isinstance(urls, str):
+            return ("url", urls, mime_type)
+    except _json.JSONDecodeError:
+        dash_mime = _parse_mpd_mime(raw)
+        return ("dash", raw, dash_mime)
+
+    return ("dash", raw, "")
 
 
 def format_duration(seconds: int) -> str:

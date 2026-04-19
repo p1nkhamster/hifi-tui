@@ -9,6 +9,7 @@ A TUI for browsing and streaming music via the [HiFi API](https://github.com/bin
 - **Queue** management with reordering and shuffle/repeat modes
 - **Recommendations** based on currently playing track
 - **Playlists** — create, rename, delete, and reorder tracks within playlists
+- **Downloads** — lossless FLAC with full metadata, cover art, synced lyrics, and CUE files
 - **Track metadata** modal showing quality, BPM, key, ISRC, and more
 - **Last.fm scrobbling** with now-playing and scrobble support
 - **Command palette** (`Ctrl+P`) listing all keybindings
@@ -17,6 +18,7 @@ A TUI for browsing and streaming music via the [HiFi API](https://github.com/bin
 
 - Python 3.10+
 - mpv
+- ffmpeg (required for HiRes DASH downloads)
 
 ## Setup
 
@@ -24,20 +26,21 @@ A TUI for browsing and streaming music via the [HiFi API](https://github.com/bin
 
 ```bash
 python -m venv venv
-venv/bin/pip install textual requests
+venv/bin/pip install textual requests mutagen
 ```
 
 ### Windows
 
 ```powershell
 python -m venv venv
-venv\Scripts\pip install textual requests
+venv\Scripts\pip install textual requests mutagen
 ```
 
-mpv must be installed and available on your `PATH`. The easiest way is via [winget](https://github.com/mpv-player/mpv):
+mpv must be installed and available on your `PATH`:
 
 ```powershell
 winget install mpv
+winget install Gyan.FFmpeg
 ```
 
 ## Configuration
@@ -121,6 +124,25 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 |-----|--------|
 | `Ctrl+Up` / `Ctrl+Down` | Move track up / down |
 | `Delete` | Remove track from playlist |
+
+## Downloads
+
+Press `d` on any track or album to download it. Progress is shown in the **Downloads** tab.
+
+Each download includes:
+- Audio file — FLAC (lossless and HiRes streams)
+- Cover art (`cover.jpg`)
+- Synced lyrics (`.lrc`) when available, sourced from Tidal or [lrclib.net](https://lrclib.net)
+- Embedded metadata: title, artist, album, track number, disc number, date, ISRC, copyright, BPM, cover art
+- CUE file (album downloads only)
+
+The default download folder is `~/Music/hifi-tui/`. You can change it in the **Settings** tab.
+
+| Key | Action |
+|-----|--------|
+| `d` | Download selected track / album |
+| `Ctrl+D` | Download currently playing track |
+| `Ctrl+D` (Album screen) | Download full album |
 
 ## Last.fm
 

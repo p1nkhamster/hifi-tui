@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from pathlib import Path
 from typing import ClassVar
@@ -25,7 +26,8 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import api, lastfm, playlists
+from . import api, config, downloader, lastfm, playlists
+from .downloader import DownloadJob
 from .player import Player, PlayerState, RepeatMode, TrackInfo
 
 
@@ -112,6 +114,7 @@ class SearchPane(Container):
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
+        Binding("d", "download", "Download"),
     ]
 
     DEFAULT_CSS = """
@@ -278,6 +281,26 @@ class SearchPane(Container):
         if self._mode == "tracks":
             self.app.push_screen(TrackMetadataScreen(self._results[idx]["id"]))  # type: ignore
 
+    def action_download(self) -> None:
+        idx = self.query_one("#search-table", DataTable).cursor_row
+        if not self._results or idx >= len(self._results):
+            return
+        item = self._results[idx]
+        app: HiFiApp = self.app  # type: ignore
+        if self._mode == "tracks":
+            app.download_track(item)
+        elif self._mode == "albums":
+            title = item.get("title", "Album")
+            app.notify(f"Loading album for download: {title}...")
+            def _load(album_id=item["id"], album_title=title):
+                try:
+                    data = api.get_album(album_id)
+                    tracks = data.get("items", [])
+                    app.call_from_thread(app.download_album, data, tracks)
+                except Exception as e:
+                    app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
+            threading.Thread(target=_load, daemon=True).start()
+
     def action_mode_tracks(self) -> None:
         self.set_mode("tracks")
 
@@ -312,6 +335,8 @@ class AlbumScreen(Screen):
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
+        Binding("d", "download_track", "Download Track"),
+        Binding("ctrl+d", "download_album", "Download Album"),
     ]
 
     DEFAULT_CSS = """
@@ -406,6 +431,17 @@ class AlbumScreen(Screen):
         if idx < len(self._tracks):
             self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["id"]))  # type: ignore
 
+    def action_download_track(self) -> None:
+        idx = self.query_one("#album-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            self.app.download_track(self._tracks[idx])  # type: ignore
+
+    def action_download_album(self) -> None:
+        self.app.download_album(  # type: ignore
+            {"title": self._album_title, "id": self._album_id},
+            self._tracks,
+        )
+
 
 class ArtistScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
@@ -413,6 +449,7 @@ class ArtistScreen(Screen):
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
+        Binding("d", "download", "Download"),
     ]
 
     DEFAULT_CSS = """
@@ -596,6 +633,33 @@ class ArtistScreen(Screen):
             if idx < len(self._tracks):
                 self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["id"]))  # type: ignore
 
+    def action_download(self) -> None:
+        app: HiFiApp = self.app  # type: ignore
+        try:
+            active_tab = self.query_one("#artist-tabs", TabbedContent).active
+        except NoMatches:
+            return
+        if active_tab == "tab-tracks":
+            idx = self.query_one("#tracks-table", DataTable).cursor_row
+            if idx < len(self._tracks):
+                app.download_track(self._tracks[idx])
+        elif active_tab in ("tab-albums", "tab-eps"):
+            lst = self._albums if active_tab == "tab-albums" else self._eps_singles
+            table_id = "albums-table" if active_tab == "tab-albums" else "eps-table"
+            idx = self.query_one(f"#{table_id}", DataTable).cursor_row
+            if idx < len(lst):
+                album = lst[idx]
+                title = album.get("title", "Album")
+                app.notify(f"Loading album for download: {title}...")
+                def _load(aid=album["id"], adata=album):
+                    try:
+                        data = api.get_album(aid)
+                        tracks = data.get("items", [])
+                        app.call_from_thread(app.download_album, data, tracks)
+                    except Exception as e:
+                        app.call_from_thread(app.notify, f"Failed: {e}", severity="error")
+                threading.Thread(target=_load, daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # Queue pane
@@ -605,6 +669,7 @@ class QueuePane(Container):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("i", "show_metadata", "Info"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
+        Binding("d", "download", "Download"),
         Binding("delete", "remove_track", "Remove"),
         Binding("ctrl+up", "move_up", "Move Up"),
         Binding("ctrl+down", "move_down", "Move Down"),
@@ -704,6 +769,17 @@ class QueuePane(Container):
         queue = self._player.state.queue
         if idx < len(queue):
             self.app.push_screen(TrackMetadataScreen(queue[idx].track_id))  # type: ignore
+
+    def action_download(self) -> None:
+        idx = self.query_one("#queue-table", DataTable).cursor_row
+        queue = self._player.state.queue
+        if idx < len(queue):
+            t = queue[idx]
+            self.app.download_track({  # type: ignore
+                "id": t.track_id, "title": t.title,
+                "artist": {"name": t.artist},
+                "album": {"title": t.album},
+            })
 
     def action_move_up(self) -> None:
         table = self.query_one("#queue-table", DataTable)
@@ -1090,6 +1166,7 @@ class PlaylistScreen(Screen):
         Binding("a", "add_to_queue", "Add to Queue"),
         Binding("l", "add_to_playlist", "Add to Playlist"),
         Binding("i", "show_metadata", "Info"),
+        Binding("d", "download", "Download"),
         Binding("delete", "remove_track", "Remove"),
         Binding("ctrl+up", "move_up", "Move Up"),
         Binding("ctrl+down", "move_down", "Move Down"),
@@ -1173,6 +1250,16 @@ class PlaylistScreen(Screen):
         idx = self.query_one("#pl-table", DataTable).cursor_row
         if idx < len(self._tracks):
             self.app.push_screen(TrackMetadataScreen(self._tracks[idx]["track_id"]))  # type: ignore
+
+    def action_download(self) -> None:
+        idx = self.query_one("#pl-table", DataTable).cursor_row
+        if idx < len(self._tracks):
+            t = self._tracks[idx]
+            self.app.download_track({  # type: ignore
+                "id": t["track_id"], "title": t.get("title", ""),
+                "artist": {"name": t.get("artist", "")},
+                "album": {"title": t.get("album", "")},
+            })
 
     def action_move_up(self) -> None:
         table = self.query_one("#pl-table", DataTable)
@@ -1301,6 +1388,60 @@ class PlaylistsPane(Container):
 
 
 # ---------------------------------------------------------------------------
+# Downloads pane
+# ---------------------------------------------------------------------------
+
+class DownloadsPane(Container):
+    DEFAULT_CSS = """
+    DownloadsPane {
+        height: 1fr;
+    }
+    DownloadsPane DataTable {
+        height: 1fr;
+        margin-top: 1;
+    }
+    DownloadsPane #dl-label {
+        margin: 1;
+        color: $text-muted;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("No downloads yet", id="dl-label")
+        yield DataTable(id="dl-table", cursor_type="row", zebra_stripes=True)
+
+    def on_mount(self) -> None:
+        t = self.query_one("#dl-table", DataTable)
+        t.add_column("Track", key="track")
+        t.add_column("Status", key="status")
+        t.add_column("Progress", key="progress")
+        self._row_keys: set[str] = set()
+        self.set_interval(0.25, self._refresh)
+
+    def _refresh(self) -> None:
+        jobs: list[DownloadJob] = self.app._download_jobs  # type: ignore
+        if not jobs:
+            return
+        table = self.query_one("#dl-table", DataTable)
+        for job in jobs:
+            if job.id not in self._row_keys:
+                table.add_row(job.title, job.status, job.progress_str, key=job.id)
+                self._row_keys.add(job.id)
+            else:
+                table.update_cell(job.id, "status", job.status, update_width=False)
+                table.update_cell(job.id, "progress", job.progress_str, update_width=False)
+
+        active = sum(1 for j in jobs if j.status not in ("Done", "Failed", "Already exists"))
+        total = len(jobs)
+        if active:
+            self.query_one("#dl-label", Label).update(
+                f"{active} downloading  |  {total} total"
+            )
+        else:
+            self.query_one("#dl-label", Label).update(f"{total} downloads complete")
+
+
+# ---------------------------------------------------------------------------
 # Settings pane (Last.fm)
 # ---------------------------------------------------------------------------
 
@@ -1310,10 +1451,13 @@ class SettingsPane(Container):
         height: 1fr;
         padding: 1 2;
     }
-    SettingsPane #s-heading {
+    SettingsPane #s-heading, SettingsPane #s-dl-heading {
         text-style: bold;
         color: $accent;
         margin-bottom: 1;
+    }
+    SettingsPane #s-dl-heading {
+        margin-top: 1;
     }
     SettingsPane #s-status {
         margin-bottom: 1;
@@ -1343,6 +1487,10 @@ class SettingsPane(Container):
     """
 
     def compose(self) -> ComposeResult:
+        yield Label("Downloads", id="s-dl-heading")
+        yield Label("Download folder:", classes="s-label")
+        yield Input(placeholder=str(downloader.DOWNLOAD_DIR), id="s-dl-path")
+        yield Button("Save Path", id="s-btn-dl-save", variant="primary")
         yield Label("Last.fm", id="s-heading")
         yield Label("", id="s-status")
         yield Container(
@@ -1373,6 +1521,7 @@ class SettingsPane(Container):
         lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
         self.query_one("#s-api-key", Input).value = lfm.api_key
         self.query_one("#s-api-secret", Input).value = lfm.api_secret
+        self.query_one("#s-dl-path", Input).value = str(self.app._download_dir)  # type: ignore
 
     def _refresh(self) -> None:
         lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
@@ -1397,7 +1546,9 @@ class SettingsPane(Container):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
-        if bid == "s-btn-save":
+        if bid == "s-btn-dl-save":
+            self._save_download_path()
+        elif bid == "s-btn-save":
             self._save_credentials()
         elif bid == "s-btn-auth":
             self._start_auth()
@@ -1405,6 +1556,20 @@ class SettingsPane(Container):
             self._complete_auth()
         elif bid == "s-btn-disconnect":
             self._disconnect()
+
+    def _save_download_path(self) -> None:
+        raw = self.query_one("#s-dl-path", Input).value.strip()
+        if not raw:
+            return
+        path = Path(raw)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.app.notify(f"Invalid path: {e}", severity="error")  # type: ignore
+            return
+        config.set_download_dir(path)
+        self.app._download_dir = path  # type: ignore
+        self.app.notify(f"Download folder set to {path}")  # type: ignore
 
     def _save_credentials(self) -> None:
         api_key = self.query_one("#s-api-key", Input).value.strip()
@@ -1645,6 +1810,7 @@ class HiFiApp(App):
         Binding("r", "repeat", "Repeat"),
         Binding("ctrl+l", "add_playing_to_playlist", "Add Playing to Playlist"),
         Binding("ctrl+shift+i", "show_playing_metadata", "Playing Info"),
+        Binding("ctrl+d", "download_playing", "Download Playing"),
     ]
 
     COMMANDS = {HifiCommandProvider}
@@ -1656,6 +1822,10 @@ class HiFiApp(App):
         self._scrobbler = lastfm.Scrobbler(self._lastfm)
         self._last_scrobble_track_id: int | None = None
         self._last_saved_queue_version: int = -1
+        self._download_jobs: list[DownloadJob] = []
+        self._download_dir = config.get_download_dir()
+        self._download_queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._download_worker, daemon=True).start()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1668,6 +1838,8 @@ class HiFiApp(App):
                 yield QueuePane(self._player, id="queue-pane")
             with TabPane("Playlists", id="tab-playlists"):
                 yield PlaylistsPane(self._player, id="playlists-pane")
+            with TabPane("Downloads", id="tab-downloads"):
+                yield DownloadsPane(id="downloads-pane")
             with TabPane("Settings", id="tab-settings"):
                 yield SettingsPane(id="settings-pane")
         yield NowPlayingBar(id="now-playing")
@@ -1772,6 +1944,49 @@ class HiFiApp(App):
             )
 
     # ------------------------------------------------------------------
+    # Downloads
+    # ------------------------------------------------------------------
+
+    def _new_job(self, title: str) -> DownloadJob:
+        import uuid
+        job = DownloadJob(id=str(uuid.uuid4()), title=title)
+        self._download_jobs.append(job)
+        return job
+
+    def _download_worker(self) -> None:
+        while True:
+            fn = self._download_queue.get()
+            try:
+                fn()
+            finally:
+                self._download_queue.task_done()
+
+    def download_track(self, track_data: dict) -> None:
+        job = self._new_job(track_data.get("title", "?"))
+        dest = self._download_dir
+
+        def _run():
+            try:
+                downloader.download_track(track_data, job=job, dest_root=dest)
+            except Exception as e:
+                job.status = "Failed"
+                job.error = str(e)
+
+        self._download_queue.put(_run)
+
+    def download_album(self, album_data: dict, tracks: list[dict]) -> None:
+        jobs = [self._new_job(t.get("title", "?")) for t in tracks]
+        dest = self._download_dir
+
+        def _run():
+            try:
+                downloader.download_album(album_data, tracks, jobs=jobs, dest_root=dest)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Album download failed: {e}", severity="error")
+
+        self._download_queue.put(_run)
+
+    # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
@@ -1822,6 +2037,15 @@ class HiFiApp(App):
             "quality": t.quality,
         }
         self.push_screen(AddToPlaylistScreen([track], t.title))
+
+    def action_download_playing(self) -> None:
+        state = self._player.state
+        if state.track is None:
+            self.notify("Nothing is playing", severity="warning")
+            return
+        t = state.track
+        self.download_track({"id": t.track_id, "title": t.title,
+                              "artist": {"name": t.artist}, "album": {"title": t.album}})
 
     def action_show_playing_metadata(self) -> None:
         state = self._player.state
