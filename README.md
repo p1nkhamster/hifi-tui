@@ -1,6 +1,6 @@
 # hifi-tui
 
-A Linux TUI for browsing and streaming music via the [HiFi API](https://github.com/binimum/hifi-api) (a Tidal proxy).
+A TUI for browsing and streaming music via the [HiFi API](https://github.com/binimum/hifi-api) (a Tidal proxy). Runs on Linux and Windows.
 
 ## Features
 
@@ -16,13 +16,28 @@ A Linux TUI for browsing and streaming music via the [HiFi API](https://github.c
 ## Requirements
 
 - Python 3.10+
-- mpv (system package)
+- mpv
 
 ## Setup
+
+### Linux
 
 ```bash
 python -m venv venv
 venv/bin/pip install textual requests
+```
+
+### Windows
+
+```powershell
+python -m venv venv
+venv\Scripts\pip install textual requests
+```
+
+mpv must be installed and available on your `PATH`. The easiest way is via [winget](https://github.com/mpv-player/mpv):
+
+```powershell
+winget install mpv
 ```
 
 ## Configuration
@@ -31,8 +46,16 @@ The API base URL is set in `src/hifi_tui/api.py`. Change `BASE_URL` to point to 
 
 ## Run
 
+### Linux
+
 ```bash
 ./run.sh
+```
+
+### Windows
+
+```powershell
+.\run.bat
 ```
 
 ## Keybindings
@@ -46,7 +69,7 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 | `Space` | Pause / Resume |
 | `n` / `p` | Next / Previous track |
 | `+` / `-` | Volume up / down |
-| `←` / `→` | Seek ±10s |
+| `Left` / `Right` | Seek ±10s |
 | `s` | Toggle shuffle |
 | `r` | Cycle repeat (off → queue → track) |
 
@@ -67,7 +90,7 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 | `l` | Add selected track to playlist |
 | `i` | Show track metadata |
 | `Ctrl+L` | Add currently playing track to playlist |
-| `Ctrl+I` | Show currently playing track metadata |
+| `Ctrl+Shift+I` | Show currently playing track metadata |
 
 ### Search tab
 
@@ -82,7 +105,7 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 | Key | Action |
 |-----|--------|
 | `Delete` | Remove selected track |
-| `Ctrl+↑` / `Ctrl+↓` | Move track up / down |
+| `Ctrl+Up` / `Ctrl+Down` | Move track up / down |
 
 ### Playlists tab
 
@@ -96,7 +119,7 @@ Press `Ctrl+P` in the app to open the command palette with a searchable list of 
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+↑` / `Ctrl+↓` | Move track up / down |
+| `Ctrl+Up` / `Ctrl+Down` | Move track up / down |
 | `Delete` | Remove track from playlist |
 
 ## Last.fm

@@ -64,7 +64,7 @@ class NowPlayingBar(Static):
         pos_str = api.format_duration(int(state.position))
         dur_str = api.format_duration(int(state.duration))
         if state.track:
-            status = "▶" if state.playing else "⏸"
+            status = ">" if state.playing else "||"
             self.query_one("#np-title", Label).update(
                 f"{status}  {state.track.title}"
             )
@@ -138,7 +138,7 @@ class SearchPane(Container):
         self._mode = "tracks"  # tracks | albums | artists
 
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="Search… (Enter to search, Tab to switch mode)", id="search-input")
+        yield Input(placeholder="Search... (Enter to search, Tab to switch mode)", id="search-input")
         yield Label("Mode: Tracks  |  F2=Tracks  F3=Albums  F4=Artists", id="search-status")
         yield DataTable(id="search-table", cursor_type="row", zebra_stripes=True)
 
@@ -161,7 +161,7 @@ class SearchPane(Container):
             self._do_search(query)
 
     def _do_search(self, query: str) -> None:
-        self.query_one("#search-status", Label).update("Searching…")
+        self.query_one("#search-status", Label).update("Searching...")
         self._results = []
 
         def _run():
@@ -239,7 +239,7 @@ class SearchPane(Container):
             app.notify(f"Added to queue: {item.get('title', '?')}")
         elif self._mode == "albums":
             title = item.get("title", "Album")
-            app.notify(f"Adding album to queue: {title}…")
+            app.notify(f"Adding album to queue: {title}...")
             def _load(album_id=item["id"], album_title=title):
                 try:
                     data = api.get_album(album_id)
@@ -261,7 +261,7 @@ class SearchPane(Container):
             app.push_screen(AddToPlaylistScreen([_track_to_storage(item)], item.get("title", "?")))
         elif self._mode == "albums":
             title = item.get("title", "Album")
-            app.notify(f"Loading '{title}'…")
+            app.notify(f"Loading '{title}'...")
             def _load(album_id=item["id"], album_title=title):
                 try:
                     data = api.get_album(album_id)
@@ -447,7 +447,7 @@ class ArtistScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Label(f"Artist: {self._artist_name}", id="artist-header")
-        yield Label("Loading…", id="artist-loading")
+        yield Label("Loading...", id="artist-loading")
         with TabbedContent(id="artist-tabs"):
             with TabPane("Top Tracks", id="tab-tracks"):
                 yield DataTable(id="tracks-table", cursor_type="row", zebra_stripes=True)
@@ -547,7 +547,7 @@ class ArtistScreen(Screen):
             if idx < len(lst):
                 album = lst[idx]
                 title = album.get("title", "Album")
-                app.notify(f"Adding '{title}' to queue…")
+                app.notify(f"Adding '{title}' to queue...")
                 def _load(aid=album["id"], atitle=title):
                     try:
                         data = api.get_album(aid)
@@ -576,7 +576,7 @@ class ArtistScreen(Screen):
             if idx < len(lst):
                 album = lst[idx]
                 title = album.get("title", "Album")
-                app.notify(f"Loading '{title}'…")
+                app.notify(f"Loading '{title}'...")
                 def _load(aid=album["id"], atitle=title):
                     try:
                         data = api.get_album(aid)
@@ -656,7 +656,7 @@ class QueuePane(Container):
         cursor = table.cursor_row
         table.clear()
         for i, t in enumerate(state.queue):
-            marker = "▶" if i == state.queue_index else ""
+            marker = ">" if i == state.queue_index else ""
             table.add_row(marker, t.title, t.artist, t.album,
                           t.quality, api.format_duration(t.duration))
         count = len(state.queue)
@@ -671,7 +671,7 @@ class QueuePane(Container):
     def _update_markers(self, state: PlayerState) -> None:
         table = self.query_one("#queue-table", DataTable)
         for i in range(len(state.queue)):
-            marker = "▶" if i == state.queue_index else ""
+            marker = ">" if i == state.queue_index else ""
             try:
                 table.update_cell_at((i, 0), marker)
             except Exception:
@@ -917,7 +917,7 @@ class AddToPlaylistScreen(ModalScreen):
             yield Label(f"Add to Playlist — {self._label}", id="atp-title")
             yield Label("Enter=add  n=new playlist  Esc=cancel", id="atp-hint")
             yield DataTable(id="atp-table", cursor_type="row", zebra_stripes=True)
-            yield Input(placeholder="New playlist name…", id="atp-input")
+            yield Input(placeholder="New playlist name...", id="atp-input")
 
     def on_mount(self) -> None:
         table = self.query_one("#atp-table", DataTable)
@@ -1016,7 +1016,7 @@ class TrackMetadataScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Loading…", id="meta-title")
+            yield Label("Loading...", id="meta-title")
             yield Label("", id="meta-body")
             yield Label("Esc = close", id="meta-hint")
 
@@ -1226,8 +1226,8 @@ class PlaylistsPane(Container):
 
     def compose(self) -> ComposeResult:
         yield Label("n=new  Enter=open  ^r=rename  Del=delete", id="plp-hint")
-        yield Input(placeholder="New playlist name…", id="plp-input")
-        yield Input(placeholder="Rename playlist to…", id="plp-rename-input")
+        yield Input(placeholder="New playlist name...", id="plp-input")
+        yield Input(placeholder="Rename playlist to...", id="plp-rename-input")
         yield DataTable(id="plp-table", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
@@ -1419,7 +1419,7 @@ class SettingsPane(Container):
 
     def _start_auth(self) -> None:
         lfm: lastfm.LastFM = self.app._lastfm  # type: ignore
-        self.app.notify("Getting auth token…")  # type: ignore
+        self.app.notify("Getting auth token...")  # type: ignore
         def _get():
             try:
                 token = lfm.get_auth_token()
@@ -1518,11 +1518,11 @@ _HIFI_BINDINGS: list[tuple[str, str, str | None]] = [
     ("P",       "Previous track",                           "prev_track"),
     ("+ / =",   "Volume up",                               "vol_up"),
     ("-",       "Volume down",                             "vol_down"),
-    ("→",       "Seek forward 10 seconds",                  "seek_fwd"),
-    ("←",       "Seek back 10 seconds",                     "seek_bck"),
+    ("Right",   "Seek forward 10 seconds",                  "seek_fwd"),
+    ("Left",    "Seek back 10 seconds",                     "seek_bck"),
     ("S",       "Toggle shuffle",                           "shuffle"),
     ("R",       "Toggle repeat",                            "repeat"),
-    ("Ctrl+I",  "Show info for currently playing track",    "show_playing_metadata"),
+    ("Ctrl+Shift+I",  "Show info for currently playing track",    "show_playing_metadata"),
     ("Ctrl+L",  "Add currently playing track to playlist",  "add_playing_to_playlist"),
     ("Q",       "Quit",                                     "quit"),
     # Context-specific (all tabs)
@@ -1534,16 +1534,16 @@ _HIFI_BINDINGS: list[tuple[str, str, str | None]] = [
     ("F3",      "[Search] Switch to Albums search mode",    None),
     ("F4",      "[Search] Switch to Artists search mode",   None),
     # Queue tab
-    ("Ctrl+↑",  "[Queue] Move track up",                    None),
-    ("Ctrl+↓",  "[Queue] Move track down",                  None),
+    ("Ctrl+Up",   "[Queue] Move track up",                  None),
+    ("Ctrl+Down", "[Queue] Move track down",                None),
     ("Delete",  "[Queue] Remove selected track",            None),
     # Playlists tab
     ("N",        "[Playlists] Create new playlist",              None),
     ("Ctrl+R",   "[Playlists] Rename selected playlist",         None),
     ("Delete",   "[Playlists] Delete selected playlist",         None),
     # Inside a playlist
-    ("Ctrl+↑",   "[Playlist] Move track up",                     None),
-    ("Ctrl+↓",   "[Playlist] Move track down",                   None),
+    ("Ctrl+Up",   "[Playlist] Move track up",                     None),
+    ("Ctrl+Down", "[Playlist] Move track down",                   None),
     ("Delete",   "[Playlist] Remove track from playlist",         None),
 ]
 
@@ -1618,7 +1618,7 @@ class HiFiApp(App):
     """HiFi TUI — browse and stream Tidal music."""
 
     TITLE = "HiFi TUI"
-    SUB_TITLE = "Tidal Music Browser  ·  ^P: keybinds"
+    SUB_TITLE = "Tidal Music Browser  -  ^P: keybinds"
 
     CSS = """
     Screen {
@@ -1639,12 +1639,12 @@ class HiFiApp(App):
         Binding("p", "prev_track", "Prev"),
         Binding("plus,=", "vol_up", "Vol+"),
         Binding("minus", "vol_down", "Vol-"),
-        Binding("right", "seek_fwd", "→10s"),
-        Binding("left", "seek_bck", "←10s"),
+        Binding("right", "seek_fwd", "+10s"),
+        Binding("left", "seek_bck", "-10s"),
         Binding("s", "shuffle", "Shuffle"),
         Binding("r", "repeat", "Repeat"),
         Binding("ctrl+l", "add_playing_to_playlist", "Add Playing to Playlist"),
-        Binding("ctrl+i", "show_playing_metadata", "Playing Info"),
+        Binding("ctrl+shift+i", "show_playing_metadata", "Playing Info"),
     ]
 
     COMMANDS = {HifiCommandProvider}
@@ -1695,10 +1695,14 @@ class HiFiApp(App):
                 self.call_from_thread(self.notify, f"Stream error: {e}", severity="error")
                 return
             if url:
-                self._player.play(info, url)
+                try:
+                    self._player.play(info, url)
+                except Exception as e:
+                    self.call_from_thread(self.notify, f"Player error: {e}", severity="error")
+                    return
                 self.call_from_thread(self._after_play, info)
         threading.Thread(target=_run, daemon=True).start()
-        self.notify(f"Loading: {info.title}…")
+        self.notify(f"Loading: {info.title}...")
 
     def play_track(self, track_data: dict) -> None:
         info = _track_info(track_data)
@@ -1712,7 +1716,11 @@ class HiFiApp(App):
                 )
                 return
             if url:
-                self._player.play(info, url)
+                try:
+                    self._player.play(info, url)
+                except Exception as e:
+                    self.call_from_thread(self.notify, f"Player error: {e}", severity="error")
+                    return
                 self.call_from_thread(self._after_play, info)
             else:
                 self.call_from_thread(
@@ -1720,7 +1728,7 @@ class HiFiApp(App):
                 )
 
         threading.Thread(target=_run, daemon=True).start()
-        self.notify(f"Loading: {info.title}…")
+        self.notify(f"Loading: {info.title}...")
 
     def _after_play(self, info: TrackInfo) -> None:
         # Trigger recommendations load

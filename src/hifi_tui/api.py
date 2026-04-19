@@ -18,7 +18,7 @@ import requests
 _active_mpd_server: socketserver.TCPServer | None = None
 _active_mpd_tmpfile: str | None = None
 
-BASE_URL = "https://hifi.p1nkhamster.xyz"
+BASE_URL = "http://192.168.8.14:8000"
 SESSION = requests.Session()
 SESSION.timeout = 15
 
@@ -230,10 +230,21 @@ def get_stream_url(track_id: int, quality: str = "HI_RES_LOSSLESS") -> str | Non
     """
     import json as _json
 
-    try:
-        data = _get("/track/", id=track_id, quality=quality)["data"]
-    except Exception:
-        data = _get("/track/", id=track_id, quality="LOSSLESS")["data"]
+    fallbacks = [quality, "LOSSLESS", "HIGH", "LOW"]
+    seen: set[str] = set()
+    data = None
+    last_exc: Exception | None = None
+    for q in fallbacks:
+        if q in seen:
+            continue
+        seen.add(q)
+        try:
+            data = _get("/track/", id=track_id, quality=q)["data"]
+            break
+        except Exception as e:
+            last_exc = e
+    if data is None:
+        raise last_exc or RuntimeError(f"No stream available for track {track_id}")
 
     manifest_b64 = data.get("manifest", "")
     if not manifest_b64:

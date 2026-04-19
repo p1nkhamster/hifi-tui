@@ -7,12 +7,54 @@ import os
 import random
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable
+
+_IS_WINDOWS = sys.platform == "win32"
+
+if _IS_WINDOWS:
+    import ctypes
+    import ctypes.wintypes as _wt
+
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _GENERIC_RW = 0xC0000000  # GENERIC_READ | GENERIC_WRITE
+    _OPEN_EXISTING = 3
+    _INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    class _WinPipe:
+        """Named-pipe wrapper with the same sendall/recv/close interface as a socket."""
+
+        def __init__(self, path: str):
+            self._h = _k32.CreateFileW(path, _GENERIC_RW, 0, None, _OPEN_EXISTING, 0, None)
+            if self._h == _INVALID_HANDLE:
+                raise OSError(ctypes.get_last_error(), f"pipe open failed: {path}")
+
+        def sendall(self, data: bytes) -> None:
+            while data:
+                n = _wt.DWORD(0)
+                if not _k32.WriteFile(self._h, data, len(data), ctypes.byref(n), None):
+                    raise OSError(ctypes.get_last_error(), "pipe write failed")
+                data = data[n.value:]
+
+        def recv(self, size: int) -> bytes:
+            avail = _wt.DWORD(0)
+            _k32.PeekNamedPipe(self._h, None, 0, None, ctypes.byref(avail), None)
+            if not avail.value:
+                raise BlockingIOError()
+            buf = ctypes.create_string_buffer(min(size, avail.value))
+            n = _wt.DWORD(0)
+            _k32.ReadFile(self._h, buf, len(buf), ctypes.byref(n), None)
+            return buf.raw[:n.value]
+
+        def close(self) -> None:
+            if self._h and self._h != _INVALID_HANDLE:
+                _k32.CloseHandle(self._h)
+                self._h = None
 
 
 class RepeatMode(Enum):
@@ -53,8 +95,15 @@ class Player:
 
     def __init__(self, on_state_change: Callable[[PlayerState], None] | None = None):
         self._proc: subprocess.Popen | None = None
-        self._sock_path = os.path.join(tempfile.mkdtemp(), "hifi-mpv.sock")
-        self._sock: socket.socket | None = None
+        if _IS_WINDOWS:
+            _uid = os.urandom(4).hex()
+            # mpv on Windows requires the full \\.\pipe\ path for --input-ipc-server
+            self._sock_path = f"\\\\.\\pipe\\hifi-mpv-{_uid}"
+            self._pipe_path = self._sock_path
+        else:
+            self._sock_path = os.path.join(tempfile.mkdtemp(), "hifi-mpv.sock")
+            self._pipe_path = self._sock_path
+        self._sock = None  # socket.socket on Unix, _WinPipe on Windows
         self._lock = threading.Lock()
         self._state = PlayerState()
         self._on_state_change = on_state_change
@@ -239,18 +288,38 @@ class Player:
             "--no-video",
             "--idle",
             f"--input-ipc-server={self._sock_path}",
-            "--really-quiet",
+            *([] if _IS_WINDOWS else ["--really-quiet"]),
         ]
+        if _IS_WINDOWS:
+            import tempfile as _tmp
+            self._mpv_log = os.path.join(_tmp.gettempdir(), "hifi-mpv.log")
+            _logf = open(self._mpv_log, "w")
+        else:
+            _logf = subprocess.DEVNULL
         self._proc = subprocess.Popen(
             args,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=_logf,
+            stderr=_logf,
         )
-        # Wait for socket to appear
+        if _IS_WINDOWS:
+            time.sleep(0.5)
+            if self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"mpv exited immediately (code {self._proc.returncode}). "
+                    f"Check log: {self._mpv_log}"
+                )
+        # Wait for IPC endpoint to appear
         for _ in range(50):
-            if os.path.exists(self._sock_path):
-                break
+            if _IS_WINDOWS:
+                try:
+                    _WinPipe(self._pipe_path).close()
+                    break
+                except OSError:
+                    pass
+            else:
+                if os.path.exists(self._sock_path):
+                    break
             time.sleep(0.1)
         self._connect_socket()
         self._running = True
@@ -258,9 +327,12 @@ class Player:
         self._poller.start()
 
     def _connect_socket(self) -> None:
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._sock.connect(self._sock_path)
-        self._sock.setblocking(False)
+        if _IS_WINDOWS:
+            self._sock = _WinPipe(self._pipe_path)
+        else:
+            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._sock.connect(self._sock_path)
+            self._sock.setblocking(False)
 
     def _close_socket(self) -> None:
         if self._sock:
